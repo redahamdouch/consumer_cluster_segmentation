@@ -1,0 +1,194 @@
+
+```{r}
+set.seed(1680)
+library(dplyr)
+library(ISLR)
+library(cluster)
+library(Rtsne)
+library(ggplot2)
+library(readxl)
+library(reshape)
+library(factoextra)
+library(cluster)
+library(mclust)
+
+```
+
+```{r}
+##Segmentation Data
+rintro.chapter5 <- read.csv("dataset.csv")
+View(rintro.chapter5)
+seg.df <- rintro.chapter5[ , -7] # remove the known segment assignments
+summary(seg.df)
+```
+## Pre-treatment
+```{r}
+#check if all data are input properly if not make changes
+sapply(seg.df, class)
+## standardize data
+seg.df[,c("income","age")] <-scale(seg.df[,c("income","age")])
+
+# get rid of NA rows
+seg.df <- na.omit(seg.df)
+
+```
+## Hierarchical Clustering: hclust() Basics
+### Init
+```{r}
+#calculate distance matrix and then look at a matrix for just the first 5 observations as follows:
+d <- dist(seg.df[, c("age", "income", "kids")])
+as.matrix(d)[1:5, 1:5]
+```
+### Problem :we cannot assume that factor variables are irrelevant to our cluster dedinitions; it is better to use all the data
+The daisy() function in the cluster. The package works with mixed data types by rescaling the values, so we use that instead of Euclidean distance:
+```{r}
+seg.df$gender <- as.factor(seg.df$gender)
+seg.df$ownHome<-as.factor(seg.df$ownHome)
+seg.df$subscribe<-as.factor(seg.df$subscribe)
+seg.dist <- daisy(seg.df)
+#Selecting the first few rows and columns: 
+as.matrix(seg.dist)[1:5, 1:5]
+seg.hc <- hclust(seg.dist , method="complete")
+```
+### Plot the dendogram
+```{r}
+plot(seg.hc)
+```
+### Dendogram: zoom in on one section of the chart
+```{r}
+plot(cut(as.dendrogram(seg.hc), h=0.5)$lower[[1]])
+```
+### Goodness of fit :
+```{r}
+cor(cophenetic(seg.hc), seg.dist)
+#In this case, CPCC > 0.7 indicates a relatively strong, meaning that the hierarchical tree represents the distances between customers well
+```
+```{r}
+# from the shape of the dendogram, we could try to seperate with 4 clusters
+plot(seg.hc)
+rect.hclust(seg.hc, k=4, border="red")
+```
+```{r}
+seg.hc.segment <- cutree(seg.hc, k=4) # membership vector for 4 groups
+table(seg.hc.segment)
+```
+### A  function that reports the mean by group
+```{r}
+
+seg.summ <- function(data , groups) {
+  aggregate(data , list(groups), function(x) mean(as.numeric(x)))
+}
+seg.summ(seg.df, seg.hc.segment)
+```
+### Plot segments
+```{r}
+plot(jitter(as.numeric(seg.df$gender)) ~
+       jitter(as.numeric(seg.df$subscribe)),
+     col=seg.hc.segment , yaxt="n", xaxt="n", ylab="", xlab="")
+axis(1, at=c(1, 2), labels=c("Subscribe: No", "Subscribe: Yes"))
+axis(2, at=c(1, 2), labels=levels(seg.df$gender))
+#non-subscribers are broken into two segments (colored red and black) that are perfectly correlated with gender.
+```
+### Elbow method for the number of clusters
+```{r}
+
+fviz_nbclust(seg.df, FUN = hcut, method = "wss")
+# Using the elbow method, 4 clusters is indeed the most appropriate number of clusters
+```
+## K-means method
+### Init
+```{r}
+#Our first step is to create a variant of seg.df that is recoded to numeric.
+seg.df.num <- seg.df
+seg.df.num$gender <- ifelse(seg.df$gender=="Male", 0, 1)
+seg.df.num$ownHome <- ifelse(seg.df$ownHome=="ownNo", 0, 1)
+seg.df.num$subscribe <- ifelse(seg.df$subscribe=="subNo", 0, 1)
+summary(seg.df.num)
+```
+#<@@ We ask for four clusters with 4 centers:
+```{r}
+set.seed(96743)
+seg.k <- kmeans(seg.df.num, centers=4)
+seg.summ(seg.df, seg.k$cluster)
+```
+### Unlike with hclust() we now see some interesting differences: the groups appear to vary by age, gender, kids, income, and home ownership
+```{r}
+clusplot(seg.df, seg.k$cluster , color=TRUE , shade=TRUE ,
+           labels=4, lines=0, main="K-means cluster plot")
+```
+## Model-Based Clustering: Mclust()
+### Init
+```{r}
+#The key idea for model-based clustering is that observations come from groups with different statistical distributions (such as different means and variances). The algorithms try to find the best set of such underlying distributions to explain theobserved data.because mclust models data with normal distributions, it uses only numeric data.
+
+library(mclust)
+seg.mc <- Mclust(seg.df.num)
+summary(seg.mc)
+seg.summ(seg.df, seg.mc$class)
+```
+```{r}
+# 4 clusters
+seg.mc4 <- Mclust(seg.df.num, G=4) 
+summary(seg.mc4)
+```
+### Cluster plot
+```{r}
+clusplot(seg.df, seg.mc4$class , color=TRUE , shade=TRUE ,
+             labels=4, lines=0, main="Model-based cluster plot")
+```
+### Comparing Models with BIC()
+
+
+```{r}
+#Note the lower the value of BIC, on an infinite number line,the better. 
+BIC(seg.mc , seg.mc4)
+```
+##Latent class analysis (LCA)
+```{r}
+#Latent class analysis (LCA) is similar to mixture modeling in the assumption that differences are attributable to unobserved groups that one wishes to uncover.
+#convert our data seg.df to be all categorical data before analyzing it
+#make everything as binary with regards to a specified cutting point(for instance, to recode as 1 for income below some cutoff and 2 above that
+#we split each variable at the median() and recode using ifelse() and factor()
+seg.df.cut <- seg.df
+seg.df.cut$age <- factor(ifelse(seg.df$age < median(seg.df$age), 1, 2))
+seg.df.cut$income <- factor(ifelse(seg.df$income < median(seg.df$income), 1, 2))
+seg.df.cut$kids <- factor(ifelse(seg.df$kids < median(seg.df$kids), 1, 2))
+summary(seg.df.cut)
+```
+### fit poLCA models
+```{r}
+seg.f <- with(seg.df.cut , cbind(age , gender , income , kids , ownHome , subscribe)~1)
+library(poLCA)
+set.seed (02807)
+#we fit poLCA models for K=3 and K=4 clusters using poLCA(formula,data, nclass=K)
+seg.LCA3 <- poLCA(seg.f, data=seg.df.cut , nclass =3)
+seg.LCA4 <- poLCA(seg.f, data=seg.df.cut , nclass =4)
+```
+### Comparing the two models
+```{r}
+
+seg.LCA4$bic
+seg.LCA3$bic
+```
+### As we've seen that is not entirely conclusive as to business utility so we also examine some other indicators such as the quick summary functionand cluster plots
+```{r}
+seg.summ(seg.df , seg.LCA3$predclass)
+```
+### Plot for K=3
+```{r}
+clusplot(seg.df , seg.LCA3$predclass , color=TRUE , shade=TRUE ,
+         labels=4, lines=0, main="LCA plot (K=3)")
+```
+### Plot for K=4
+```{r}
+clusplot(seg.df , seg.LCA4$predclass , color=TRUE , shade=TRUE ,
+         labels=4, lines=0, main="LCA plot (K=4)")
+```
+```{r}
+seg.summ(seg.df , seg.LCA4$predclass)
+```
+### We use table() to look at the cross-tabs between the LCA 3-cluster and 4-cluster solutions found above
+```{r}
+table(seg.LCA3$predclass , seg.LCA4$predclass)
+```
+
